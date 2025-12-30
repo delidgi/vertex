@@ -1,6 +1,6 @@
 /**
  * Vertex Image Generation 🎨
- * Google Vertex AI Imagen-powered image generation with avatar references and character context
+ * Gemini-powered image generation with character context
  */
 
 import { 
@@ -27,16 +27,11 @@ const extensionName = 'vertex';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 const defaultSettings = {
-    model: 'imagen-3.0-generate-002',
+    model: 'gemini-3-pro-image-preview',
     aspect_ratio: '1:1',
-    number_of_images: 1,
-    use_avatars: false,
     include_descriptions: false,
-    negative_prompt: '',
-    system_instruction: 'You are an image generation assistant. Generate an illustration that depicts the scene described in the prompt.',
+    system_instruction: 'Generate an illustration based on the scene described. Create a high-quality, detailed image.',
     gallery: [],
-    project_id: '',
-    location: 'us-central1',
 };
 
 const MAX_GALLERY_SIZE = 50;
@@ -52,64 +47,10 @@ async function loadSettings() {
 
     $('#vig_model').val(extension_settings[extensionName].model);
     $('#vig_aspect_ratio').val(extension_settings[extensionName].aspect_ratio);
-    $('#vig_number_of_images').val(extension_settings[extensionName].number_of_images);
-    $('#vig_use_avatars').prop('checked', extension_settings[extensionName].use_avatars);
     $('#vig_include_descriptions').prop('checked', extension_settings[extensionName].include_descriptions);
-    $('#vig_negative_prompt').val(extension_settings[extensionName].negative_prompt);
     $('#vig_system_instruction').val(extension_settings[extensionName].system_instruction);
-    $('#vig_project_id').val(extension_settings[extensionName].project_id);
-    $('#vig_location').val(extension_settings[extensionName].location);
 
     renderGallery();
-}
-
-async function getUserAvatar() {
-    try {
-        let avatarUrl = getAvatarPath(user_avatar);
-        if (!avatarUrl) return null;
-
-        const response = await fetch(avatarUrl);
-        if (!response.ok) return null;
-
-        const blob = await response.blob();
-        const base64 = await getBase64Async(blob);
-        const parts = base64.split(',');
-        const mimeType = parts[0]?.match(/data:([^;]+)/)?.[1] || 'image/png';
-        const data = parts[1] || base64;
-        const userName = name1 || 'User';
-
-        return { mimeType, data, role: 'user', name: userName };
-    } catch (error) {
-        console.warn(`[${extensionName}] Error fetching user avatar:`, error);
-        return null;
-    }
-}
-
-async function getCharacterAvatar() {
-    const context = getContext();
-    const character = context.characters[context.characterId];
-    if (!character?.avatar) return null;
-
-    try {
-        const avatarUrl = `/characters/${encodeURIComponent(character.avatar)}`;
-        const response = await fetch(avatarUrl);
-        if (!response.ok) return null;
-
-        const blob = await response.blob();
-        const base64 = await getBase64Async(blob);
-        const parts = base64.split(',');
-        const mimeType = parts[0]?.match(/data:([^;]+)/)?.[1] || 'image/png';
-
-        return {
-            mimeType,
-            data: parts[1] || base64,
-            role: 'character',
-            name: context.name2 || 'Character',
-        };
-    } catch (error) {
-        console.warn(`[${extensionName}] Error fetching character avatar:`, error);
-        return null;
-    }
 }
 
 function getLastMessage() {
@@ -136,7 +77,6 @@ function getCharacterDescriptions() {
         user_persona: power_user.persona_description || '',
         char_name: context.name2 || 'Character',
         char_description: character?.description || '',
-        char_scenario: character?.scenario || '',
     };
 }
 
@@ -159,9 +99,9 @@ async function buildPrompt(prompt, sender = null) {
     }
 
     if (sender) {
-        fullPrompt += `[Message from ${sender}]: ${prompt}`;
+        fullPrompt += `[Scene/Message from ${sender}]: ${prompt}`;
     } else {
-        fullPrompt += prompt;
+        fullPrompt += `[Scene to illustrate]: ${prompt}`;
     }
 
     return fullPrompt;
@@ -171,19 +111,24 @@ async function generateImageFromPrompt(prompt, sender = null) {
     const settings = extension_settings[extensionName];
     const fullPrompt = await buildPrompt(prompt, sender);
 
-    console.log(`[${extensionName}] Generating with prompt:`, fullPrompt.substring(0, 100) + '...');
+    console.log(`[${extensionName}] Generating with model: ${settings.model}`);
+    console.log(`[${extensionName}] Prompt: ${fullPrompt.substring(0, 150)}...`);
 
-    // Use SillyTavern's makersuite backend
     const requestBody = {
         chat_completion_source: 'makersuite',
         model: settings.model,
-        messages: [{ role: 'user', content: [{ type: 'text', text: fullPrompt }] }],
+        messages: [{ 
+            role: 'user', 
+            content: [{ type: 'text', text: fullPrompt }] 
+        }],
         max_tokens: 8192,
         temperature: 1,
         request_images: true,
         request_image_aspect_ratio: settings.aspect_ratio || '1:1',
         stream: false,
     };
+
+    console.log(`[${extensionName}] Request body:`, JSON.stringify(requestBody, null, 2));
 
     const response = await fetch('/api/backends/chat-completions/generate', {
         method: 'POST',
@@ -194,15 +139,22 @@ async function generateImageFromPrompt(prompt, sender = null) {
     if (!response.ok) {
         const errorText = await response.text();
         console.error(`[${extensionName}] API Error:`, errorText);
-        throw new Error(`API Error: ${response.status}`);
+        let errorMessage = `API Error: ${response.status}`;
+        try {
+            const errorJson = JSON.parse(errorText);
+            errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
+        } catch (e) {}
+        throw new Error(errorMessage);
     }
 
     const result = await response.json();
+    console.log(`[${extensionName}] Response:`, JSON.stringify(result, null, 2).substring(0, 500));
     
-    // Check for image in response
+    // Check for image in responseContent.parts (Gemini format)
     if (result.responseContent?.parts) {
         for (const part of result.responseContent.parts) {
             if (part.inlineData?.data) {
+                console.log(`[${extensionName}] Found image in responseContent.parts`);
                 return { 
                     imageData: part.inlineData.data, 
                     mimeType: part.inlineData.mimeType || 'image/png' 
@@ -211,16 +163,30 @@ async function generateImageFromPrompt(prompt, sender = null) {
         }
     }
 
-    // Check predictions format (Vertex AI)
-    if (result.predictions) {
-        for (const prediction of result.predictions) {
-            if (prediction.bytesBase64Encoded) {
-                return {
-                    imageData: prediction.bytesBase64Encoded,
-                    mimeType: 'image/png',
-                };
+    // Check choices format
+    if (result.choices?.[0]?.message?.content) {
+        const content = result.choices[0].message.content;
+        if (Array.isArray(content)) {
+            for (const part of content) {
+                if (part.type === 'image_url' && part.image_url?.url) {
+                    const url = part.image_url.url;
+                    if (url.startsWith('data:')) {
+                        const matches = url.match(/^data:([^;]+);base64,(.+)$/);
+                        if (matches) {
+                            console.log(`[${extensionName}] Found image in choices`);
+                            return { imageData: matches[2], mimeType: matches[1] };
+                        }
+                    }
+                }
             }
         }
+    }
+
+    // Check if there's text response (model didn't generate image)
+    const textContent = result.choices?.[0]?.message?.content;
+    if (typeof textContent === 'string' && textContent.length > 0) {
+        console.log(`[${extensionName}] Model returned text instead of image:`, textContent.substring(0, 200));
+        throw new Error('Model returned text instead of image. Try a different prompt or model.');
     }
 
     throw new Error('No image was returned by the API');
@@ -401,7 +367,7 @@ function injectMessageButton(messageId) {
     if (extraButtons.length === 0 || extraButtons.find('.vig_message_gen').length > 0) return;
 
     const vigButton = $(`
-        <div title="Generate with Vertex AI 🎨" 
+        <div title="Generate Image 🎨" 
              class="mes_button vig_message_gen fa-solid fa-wand-magic-sparkles">
         </div>
     `);
@@ -490,38 +456,13 @@ jQuery(async () => {
         saveSettingsDebounced();
     });
 
-    $('#vig_number_of_images').on('change', function () {
-        extension_settings[extensionName].number_of_images = parseInt($(this).val()) || 1;
-        saveSettingsDebounced();
-    });
-
-    $('#vig_use_avatars').on('change', function () {
-        extension_settings[extensionName].use_avatars = $(this).prop('checked');
-        saveSettingsDebounced();
-    });
-
     $('#vig_include_descriptions').on('change', function () {
         extension_settings[extensionName].include_descriptions = $(this).prop('checked');
         saveSettingsDebounced();
     });
 
-    $('#vig_negative_prompt').on('input', function () {
-        extension_settings[extensionName].negative_prompt = $(this).val();
-        saveSettingsDebounced();
-    });
-
     $('#vig_system_instruction').on('input', function () {
         extension_settings[extensionName].system_instruction = $(this).val();
-        saveSettingsDebounced();
-    });
-
-    $('#vig_project_id').on('input', function () {
-        extension_settings[extensionName].project_id = $(this).val();
-        saveSettingsDebounced();
-    });
-
-    $('#vig_location').on('change', function () {
-        extension_settings[extensionName].location = $(this).val();
         saveSettingsDebounced();
     });
 
@@ -549,10 +490,10 @@ jQuery(async () => {
     setTimeout(injectAllMessageButtons, 500);
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'verteximagine',
+        name: 'vimg',
         returns: 'URL of the generated image',
         callback: slashCommandHandler,
-        aliases: ['vimg', 'verteximg', 'imagen'],
+        aliases: ['verteximagine', 'verteximg'],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
                 description: 'Prompt for image generation',
@@ -560,8 +501,8 @@ jQuery(async () => {
                 isRequired: true,
             }),
         ],
-        helpString: 'Generate an image using Vertex AI. Example: /verteximagine sunset over mountains',
+        helpString: 'Generate an image. Example: /vimg sunset over mountains',
     }));
 
-    console.log(`[${extensionName}] Loaded!`);
+    console.log(`[${extensionName}] Loaded successfully!`);
 });
