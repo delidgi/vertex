@@ -1,6 +1,6 @@
 /**
  * Vertex Image Generation 🎨
- * Gemini-powered image generation with character context
+ * Nano Banana Pro - Gemini-powered image generation with avatar references and character context
  */
 
 import { 
@@ -29,8 +29,9 @@ const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 const defaultSettings = {
     model: 'gemini-3-pro-image-preview',
     aspect_ratio: '1:1',
-    include_descriptions: false,
-    system_instruction: 'Generate an illustration based on the scene described. Create a high-quality, detailed image.',
+    use_avatars: true,
+    include_descriptions: true,
+    system_instruction: 'You are an image generation assistant. When reference images are provided, they represent the characters in the story. Generate an illustration that depicts the scene described in the prompt while maintaining the art style and appearance of the reference characters. You are not obligated to include both characters - if the scene depicts only one character alone, illustrate them alone.',
     gallery: [],
 };
 
@@ -47,10 +48,62 @@ async function loadSettings() {
 
     $('#vig_model').val(extension_settings[extensionName].model);
     $('#vig_aspect_ratio').val(extension_settings[extensionName].aspect_ratio);
+    $('#vig_use_avatars').prop('checked', extension_settings[extensionName].use_avatars);
     $('#vig_include_descriptions').prop('checked', extension_settings[extensionName].include_descriptions);
     $('#vig_system_instruction').val(extension_settings[extensionName].system_instruction);
 
     renderGallery();
+}
+
+// Получение аватара пользователя
+async function getUserAvatar() {
+    try {
+        let avatarUrl = getAvatarPath(user_avatar);
+        if (!avatarUrl) return null;
+
+        const response = await fetch(avatarUrl);
+        if (!response.ok) return null;
+
+        const blob = await response.blob();
+        const base64 = await getBase64Async(blob);
+        const parts = base64.split(',');
+        const mimeType = parts[0]?.match(/data:([^;]+)/)?.[1] || 'image/png';
+        const data = parts[1] || base64;
+        const userName = name1 || 'User';
+
+        return { mimeType, data, role: 'user', name: userName };
+    } catch (error) {
+        console.warn(`[${extensionName}] Error fetching user avatar:`, error);
+        return null;
+    }
+}
+
+// Получение аватара персонажа
+async function getCharacterAvatar() {
+    const context = getContext();
+    const character = context.characters[context.characterId];
+    if (!character?.avatar) return null;
+
+    try {
+        const avatarUrl = `/characters/${encodeURIComponent(character.avatar)}`;
+        const response = await fetch(avatarUrl);
+        if (!response.ok) return null;
+
+        const blob = await response.blob();
+        const base64 = await getBase64Async(blob);
+        const parts = base64.split(',');
+        const mimeType = parts[0]?.match(/data:([^;]+)/)?.[1] || 'image/png';
+
+        return {
+            mimeType,
+            data: parts[1] || base64,
+            role: 'character',
+            name: context.name2 || 'Character',
+        };
+    } catch (error) {
+        console.warn(`[${extensionName}] Error fetching character avatar:`, error);
+        return null;
+    }
 }
 
 function getLastMessage() {
@@ -77,58 +130,89 @@ function getCharacterDescriptions() {
         user_persona: power_user.persona_description || '',
         char_name: context.name2 || 'Character',
         char_description: character?.description || '',
+        char_scenario: character?.scenario || '',
     };
 }
 
-async function buildPrompt(prompt, sender = null) {
+// Построение сообщений с аватарками
+async function buildMessages(prompt, sender = null) {
     const settings = extension_settings[extensionName];
-    let fullPrompt = '';
+    const contentParts = [];
 
+    // Системная инструкция
     if (settings.system_instruction) {
-        fullPrompt += settings.system_instruction + '\n\n';
+        contentParts.push({ type: 'text', text: settings.system_instruction });
     }
 
+    // Описания персонажей
     if (settings.include_descriptions) {
         const descriptions = getCharacterDescriptions();
+        let descText = '';
         if (descriptions.user_persona) {
-            fullPrompt += `[${descriptions.user_name} Description]: ${descriptions.user_persona}\n\n`;
+            descText += `[${descriptions.user_name} (User) Description]: ${descriptions.user_persona}\n\n`;
         }
         if (descriptions.char_description) {
-            fullPrompt += `[${descriptions.char_name} Description]: ${descriptions.char_description}\n\n`;
+            descText += `[${descriptions.char_name} (Character) Description]: ${descriptions.char_description}\n\n`;
+        }
+        if (descriptions.char_scenario) {
+            descText += `[Current Scenario]: ${descriptions.char_scenario}\n\n`;
+        }
+        if (descText) {
+            contentParts.push({ type: 'text', text: descText.trim() });
         }
     }
 
+    // Промпт с контекстом отправителя
     if (sender) {
-        fullPrompt += `[Scene/Message from ${sender}]: ${prompt}`;
+        contentParts.push({ type: 'text', text: `[Message from ${sender}]: ${prompt}` });
     } else {
-        fullPrompt += `[Scene to illustrate]: ${prompt}`;
+        contentParts.push({ type: 'text', text: prompt });
     }
 
-    return fullPrompt;
+    // Аватарки как референсы
+    if (settings.use_avatars) {
+        const charAvatarData = await getCharacterAvatar();
+        const userAvatarData = await getUserAvatar();
+
+        if (charAvatarData) {
+            console.log(`[${extensionName}] Adding character avatar for: ${charAvatarData.name}`);
+            contentParts.push({ type: 'text', text: `[Reference image for {{char}} - ${charAvatarData.name}]` });
+            contentParts.push({
+                type: 'image_url',
+                image_url: { url: `data:${charAvatarData.mimeType};base64,${charAvatarData.data}` },
+            });
+        }
+
+        if (userAvatarData) {
+            console.log(`[${extensionName}] Adding user avatar for: ${userAvatarData.name}`);
+            contentParts.push({ type: 'text', text: `[Reference image for {{user}} - ${userAvatarData.name}]` });
+            contentParts.push({
+                type: 'image_url',
+                image_url: { url: `data:${userAvatarData.mimeType};base64,${userAvatarData.data}` },
+            });
+        }
+    }
+
+    return [{ role: 'user', content: contentParts }];
 }
 
 async function generateImageFromPrompt(prompt, sender = null) {
     const settings = extension_settings[extensionName];
-    const fullPrompt = await buildPrompt(prompt, sender);
+    const messages = await buildMessages(prompt, sender);
 
     console.log(`[${extensionName}] Generating with model: ${settings.model}`);
-    console.log(`[${extensionName}] Prompt: ${fullPrompt.substring(0, 150)}...`);
+    console.log(`[${extensionName}] Messages:`, JSON.stringify(messages, null, 2).substring(0, 500));
 
     const requestBody = {
         chat_completion_source: 'makersuite',
         model: settings.model,
-        messages: [{ 
-            role: 'user', 
-            content: [{ type: 'text', text: fullPrompt }] 
-        }],
+        messages: messages,
         max_tokens: 8192,
         temperature: 1,
         request_images: true,
         request_image_aspect_ratio: settings.aspect_ratio || '1:1',
         stream: false,
     };
-
-    console.log(`[${extensionName}] Request body:`, JSON.stringify(requestBody, null, 2));
 
     const response = await fetch('/api/backends/chat-completions/generate', {
         method: 'POST',
@@ -148,7 +232,7 @@ async function generateImageFromPrompt(prompt, sender = null) {
     }
 
     const result = await response.json();
-    console.log(`[${extensionName}] Response:`, JSON.stringify(result, null, 2).substring(0, 500));
+    console.log(`[${extensionName}] Response received`);
     
     // Check for image in responseContent.parts (Gemini format)
     if (result.responseContent?.parts) {
@@ -256,7 +340,7 @@ async function generateImage() {
 
     const charName = getContext().name2 || 'Character';
     const userName = name1 || 'User';
-    const sender = lastMsg.isUser ? userName : charName;
+    const sender = lastMsg.isUser ? `{{user}} (${userName})` : `{{char}} (${charName})`;
 
     try {
         const result = await generateImageFromPrompt(lastMsg.text, sender);
@@ -294,7 +378,7 @@ async function vigMessageButton($icon) {
 
     const charName = getContext().name2 || 'Character';
     const userName = name1 || 'User';
-    const sender = message.is_user ? userName : charName;
+    const sender = message.is_user ? `{{user}} (${userName})` : `{{char}} (${charName})`;
 
     $icon.addClass('vig_busy');
     $icon.removeClass('fa-wand-magic-sparkles').addClass('fa-spinner fa-spin');
@@ -367,7 +451,7 @@ function injectMessageButton(messageId) {
     if (extraButtons.length === 0 || extraButtons.find('.vig_message_gen').length > 0) return;
 
     const vigButton = $(`
-        <div title="Generate Image 🎨" 
+        <div title="Generate with Nano Banana 🍌" 
              class="mes_button vig_message_gen fa-solid fa-wand-magic-sparkles">
         </div>
     `);
@@ -430,7 +514,7 @@ function deleteGalleryImage(index) {
 }
 
 jQuery(async () => {
-    console.log(`[${extensionName}] Initializing...`);
+    console.log(`[${extensionName}] Initializing Nano Banana Pro...`);
     
     try {
         const response = await fetch(`/scripts/extensions/third-party/${extensionName}/settings.html`);
@@ -453,6 +537,11 @@ jQuery(async () => {
 
     $('#vig_aspect_ratio').on('change', function () {
         extension_settings[extensionName].aspect_ratio = $(this).val();
+        saveSettingsDebounced();
+    });
+
+    $('#vig_use_avatars').on('change', function () {
+        extension_settings[extensionName].use_avatars = $(this).prop('checked');
         saveSettingsDebounced();
     });
 
@@ -493,7 +582,7 @@ jQuery(async () => {
         name: 'vimg',
         returns: 'URL of the generated image',
         callback: slashCommandHandler,
-        aliases: ['verteximagine', 'verteximg'],
+        aliases: ['verteximagine', 'verteximg', 'nanobanana'],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
                 description: 'Prompt for image generation',
@@ -501,8 +590,8 @@ jQuery(async () => {
                 isRequired: true,
             }),
         ],
-        helpString: 'Generate an image. Example: /vimg sunset over mountains',
+        helpString: 'Generate an image with Nano Banana Pro. Example: /vimg sunset over mountains',
     }));
 
-    console.log(`[${extensionName}] Loaded successfully!`);
+    console.log(`[${extensionName}] Nano Banana Pro loaded! 🍌`);
 });
