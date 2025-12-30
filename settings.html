@@ -1,0 +1,157 @@
+<div id="vig_settings" class="extension_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Vertex Image Generation 🎨</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <!-- Auth Info -->
+            <div class="flex-container flexFlowColumn">
+                <small>
+                    <i class="fa-solid fa-info-circle"></i>
+                    Uses Google Vertex AI Imagen for image generation.
+                    Configure your Google Cloud credentials in SillyTavern settings or use direct API mode.
+                </small>
+                <hr>
+            </div>
+
+            <!-- Model Selection -->
+            <div class="flex-container">
+                <div class="flex1">
+                    <label for="vig_model">Model</label>
+                    <select id="vig_model" class="vig-setting">
+                        <option value="imagen-3.0-generate-002">Imagen 3.0 Generate (Best Quality)</option>
+                        <option value="imagen-3.0-fast-generate-001">Imagen 3.0 Fast (Faster)</option>
+                        <option value="imagegeneration@006">Imagen 2.0 (Legacy)</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Aspect Ratio & Number of Images -->
+            <div class="flex-container">
+                <div class="flex1">
+                    <label for="vig_aspect_ratio">Aspect Ratio</label>
+                    <select id="vig_aspect_ratio" class="vig-setting">
+                        <option value="1:1">1:1 (Square)</option>
+                        <option value="3:4">3:4 (Portrait)</option>
+                        <option value="4:3">4:3 (Landscape)</option>
+                        <option value="9:16">9:16 (Tall)</option>
+                        <option value="16:9">16:9 (Wide)</option>
+                    </select>
+                </div>
+                <div class="flex1">
+                    <label for="vig_number_of_images">Number of Images</label>
+                    <select id="vig_number_of_images" class="vig-setting">
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Options -->
+            <div class="flex-container flexFlowColumn">
+                <label class="checkbox_label" title="Include user and character avatars as reference images">
+                    <input type="checkbox" id="vig_use_avatars" class="vig-setting" />
+                    <span>Use avatar references (in prompt)</span>
+                </label>
+                <label class="checkbox_label" title="Include character and persona descriptions in the prompt">
+                    <input type="checkbox" id="vig_include_descriptions" class="vig-setting" />
+                    <span>Include character descriptions</span>
+                </label>
+            </div>
+
+            <!-- Negative Prompt -->
+            <div class="flex-container flexFlowColumn">
+                <label for="vig_negative_prompt">Negative Prompt</label>
+                <textarea id="vig_negative_prompt" class="vig-setting text_pole textarea_compact" rows="2"
+                    placeholder="Things to avoid in the generated image..."></textarea>
+            </div>
+
+            <!-- System Instruction -->
+            <div class="flex-container flexFlowColumn">
+                <label for="vig_system_instruction">System Instruction</label>
+                <textarea id="vig_system_instruction" class="vig-setting text_pole textarea_compact" rows="3"
+                    placeholder="Instructions for the image generation model..."></textarea>
+            </div>
+
+            <hr>
+
+            <!-- Direct API Settings -->
+            <div class="flex-container flexFlowColumn">
+                <label class="checkbox_label" title="Use direct Vertex AI API calls (requires Project ID)">
+                    <input type="checkbox" id="vig_use_direct_api" class="vig-setting" />
+                    <span>Use Direct Vertex AI API</span>
+                </label>
+            </div>
+
+            <div id="vig_direct_api_settings" class="flex-container flexFlowColumn" style="display: none;">
+                <div class="flex-container">
+                    <div class="flex1">
+                        <label for="vig_project_id">Google Cloud Project ID</label>
+                        <input type="text" id="vig_project_id" class="vig-setting text_pole" 
+                            placeholder="your-project-id" />
+                    </div>
+                </div>
+                <div class="flex-container">
+                    <div class="flex1">
+                        <label for="vig_location">Region</label>
+                        <select id="vig_location" class="vig-setting">
+                            <option value="us-central1">us-central1 (Iowa)</option>
+                            <option value="us-east4">us-east4 (Virginia)</option>
+                            <option value="us-west1">us-west1 (Oregon)</option>
+                            <option value="europe-west4">europe-west4 (Netherlands)</option>
+                            <option value="asia-northeast1">asia-northeast1 (Tokyo)</option>
+                            <option value="asia-southeast1">asia-southeast1 (Singapore)</option>
+                        </select>
+                    </div>
+                </div>
+                <small>
+                    <i class="fa-solid fa-warning"></i>
+                    Direct API requires proper Google Cloud authentication configured in SillyTavern.
+                </small>
+            </div>
+
+            <hr>
+
+            <!-- Generate Button -->
+            <div class="flex-container">
+                <div id="vig_generate_btn" class="menu_button menu_button_icon"
+                    title="Generate image from last message">
+                    <i class="fa-solid fa-image"></i>
+                    <span>Generate Image</span>
+                </div>
+            </div>
+
+            <!-- Output Preview -->
+            <div id="vig_preview_container" class="flex-container flexFlowColumn" style="display: none;">
+                <label>Generated Image</label>
+                <img id="vig_preview_image" style="max-width: 100%; border-radius: 8px;" />
+            </div>
+
+            <hr>
+
+            <!-- Gallery Section -->
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>Gallery</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <div id="vig_gallery_container" class="vig_gallery"></div>
+                    <div id="vig_gallery_empty" class="vig_gallery_empty">
+                        <i class="fa-solid fa-images"></i>
+                        <span>No images generated yet.</span>
+                    </div>
+                    <div class="flex-container">
+                        <div id="vig_clear_gallery" class="menu_button menu_button_icon" title="Clear gallery">
+                            <i class="fa-solid fa-trash"></i>
+                            <span>Clear Gallery</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
