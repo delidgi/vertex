@@ -1,7 +1,6 @@
 /**
  * Vertex Image Generation 🎨
  * Google Vertex AI Imagen-powered image generation with avatar references and character context
- * Uses SillyTavern's backend to handle Google Vertex AI authentication
  */
 
 import { 
@@ -24,7 +23,7 @@ import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.j
 import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/SlashCommandArgument.js';
 
-const extensionName = 'vertex-image-generation';
+const extensionName = 'vertex';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 const defaultSettings = {
@@ -34,34 +33,13 @@ const defaultSettings = {
     use_avatars: false,
     include_descriptions: false,
     negative_prompt: '',
-    system_instruction: 'You are an image generation assistant. When reference images are provided, they represent the characters in the story. Generate an illustration that depicts the scene described in the prompt while maintaining the art style and appearance of the reference characters.',
+    system_instruction: 'You are an image generation assistant. Generate an illustration that depicts the scene described in the prompt.',
     gallery: [],
-    // Vertex AI specific settings
     project_id: '',
     location: 'us-central1',
-    use_direct_api: true,  // true = direct Vertex API, false = through SillyTavern proxy
 };
 
 const MAX_GALLERY_SIZE = 50;
-
-// Vertex AI Imagen models
-const IMAGEN_MODELS = {
-    'imagen-3.0-generate-002': {
-        name: 'Imagen 3.0 Generate',
-        description: 'Latest Imagen model for high-quality generation',
-        maxImages: 4,
-    },
-    'imagen-3.0-fast-generate-001': {
-        name: 'Imagen 3.0 Fast',
-        description: 'Faster generation with slightly lower quality',
-        maxImages: 4,
-    },
-    'imagegeneration@006': {
-        name: 'Imagen 2.0',
-        description: 'Previous generation model',
-        maxImages: 4,
-    },
-};
 
 async function loadSettings() {
     extension_settings[extensionName] = extension_settings[extensionName] || {};
@@ -81,15 +59,8 @@ async function loadSettings() {
     $('#vig_system_instruction').val(extension_settings[extensionName].system_instruction);
     $('#vig_project_id').val(extension_settings[extensionName].project_id);
     $('#vig_location').val(extension_settings[extensionName].location);
-    $('#vig_use_direct_api').prop('checked', extension_settings[extensionName].use_direct_api);
 
-    toggleDirectApiSettings();
     renderGallery();
-}
-
-function toggleDirectApiSettings() {
-    const useDirectApi = extension_settings[extensionName].use_direct_api;
-    $('#vig_direct_api_settings').toggle(useDirectApi);
 }
 
 async function getUserAvatar() {
@@ -169,35 +140,24 @@ function getCharacterDescriptions() {
     };
 }
 
-/**
- * Build prompt for Vertex AI Imagen
- * @param {string} prompt - The prompt text
- * @param {string|null} sender - Optional sender: '{{user}}', '{{char}}', or null
- */
 async function buildPrompt(prompt, sender = null) {
     const settings = extension_settings[extensionName];
     let fullPrompt = '';
 
-    // Add system instruction
     if (settings.system_instruction) {
         fullPrompt += settings.system_instruction + '\n\n';
     }
 
-    // Add character descriptions
     if (settings.include_descriptions) {
         const descriptions = getCharacterDescriptions();
         if (descriptions.user_persona) {
-            fullPrompt += `[${descriptions.user_name} (User) Description]: ${descriptions.user_persona}\n\n`;
+            fullPrompt += `[${descriptions.user_name} Description]: ${descriptions.user_persona}\n\n`;
         }
         if (descriptions.char_description) {
-            fullPrompt += `[${descriptions.char_name} (Character) Description]: ${descriptions.char_description}\n\n`;
-        }
-        if (descriptions.char_scenario) {
-            fullPrompt += `[Current Scenario]: ${descriptions.char_scenario}\n\n`;
+            fullPrompt += `[${descriptions.char_name} Description]: ${descriptions.char_description}\n\n`;
         }
     }
 
-    // Add prompt with sender context
     if (sender) {
         fullPrompt += `[Message from ${sender}]: ${prompt}`;
     } else {
@@ -207,28 +167,23 @@ async function buildPrompt(prompt, sender = null) {
     return fullPrompt;
 }
 
-/**
- * Generate image using Vertex AI Imagen via SillyTavern proxy
- * This uses the existing Google AI integration in SillyTavern
- */
-async function generateViaProxy(prompt, negativePrompt) {
+async function generateImageFromPrompt(prompt, sender = null) {
     const settings = extension_settings[extensionName];
-    
-    // Build request for SillyTavern's backend
+    const fullPrompt = await buildPrompt(prompt, sender);
+
+    console.log(`[${extensionName}] Generating with prompt:`, fullPrompt.substring(0, 100) + '...');
+
+    // Use SillyTavern's makersuite backend
     const requestBody = {
-        // Use vertex as the source
         chat_completion_source: 'makersuite',
         model: settings.model,
-        prompt: prompt,
-        negative_prompt: negativePrompt || undefined,
-        aspect_ratio: settings.aspect_ratio,
-        number_of_images: settings.number_of_images,
-        // Signal this is an image generation request
+        messages: [{ role: 'user', content: [{ type: 'text', text: fullPrompt }] }],
+        max_tokens: 8192,
+        temperature: 1,
         request_images: true,
-        request_image_aspect_ratio: settings.aspect_ratio,
+        request_image_aspect_ratio: settings.aspect_ratio || '1:1',
+        stream: false,
     };
-
-    console.log(`[${extensionName}] Generating via proxy with model:`, settings.model);
 
     const response = await fetch('/api/backends/chat-completions/generate', {
         method: 'POST',
@@ -238,37 +193,15 @@ async function generateViaProxy(prompt, negativePrompt) {
 
     if (!response.ok) {
         const errorText = await response.text();
-        console.error(`[${extensionName}] API Error Response:`, errorText);
-        let errorMessage = `API Error: ${response.status}`;
-        try {
-            const errorJson = JSON.parse(errorText);
-            errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
-        } catch (e) {}
-        throw new Error(errorMessage);
+        console.error(`[${extensionName}] API Error:`, errorText);
+        throw new Error(`API Error: ${response.status}`);
     }
 
     const result = await response.json();
     
-    // Handle Vertex AI response format
-    if (result.predictions) {
-        const images = [];
-        for (const prediction of result.predictions) {
-            if (prediction.bytesBase64Encoded) {
-                images.push({
-                    imageData: prediction.bytesBase64Encoded,
-                    mimeType: prediction.mimeType || 'image/png',
-                });
-            }
-        }
-        if (images.length > 0) {
-            return images[0]; // Return first image
-        }
-    }
-    
-    // Handle standard response format
-    const responseContent = result.responseContent;
-    if (responseContent?.parts) {
-        for (const part of responseContent.parts) {
+    // Check for image in response
+    if (result.responseContent?.parts) {
+        for (const part of result.responseContent.parts) {
             if (part.inlineData?.data) {
                 return { 
                     imageData: part.inlineData.data, 
@@ -278,99 +211,19 @@ async function generateViaProxy(prompt, negativePrompt) {
         }
     }
 
-    throw new Error('No image was returned by the API');
-}
-
-/**
- * Generate image using direct Vertex AI API call
- * Requires project_id and proper authentication
- */
-async function generateDirectApi(prompt, negativePrompt) {
-    const settings = extension_settings[extensionName];
-    
-    if (!settings.project_id) {
-        throw new Error('Project ID is required for direct Vertex AI API calls. Please configure it in settings.');
-    }
-
-    const endpoint = `https://${settings.location}-aiplatform.googleapis.com/v1/projects/${settings.project_id}/locations/${settings.location}/publishers/google/models/${settings.model}:predict`;
-
-    // Vertex AI Imagen request format
-    const requestBody = {
-        instances: [
-            {
-                prompt: prompt,
+    // Check predictions format (Vertex AI)
+    if (result.predictions) {
+        for (const prediction of result.predictions) {
+            if (prediction.bytesBase64Encoded) {
+                return {
+                    imageData: prediction.bytesBase64Encoded,
+                    mimeType: 'image/png',
+                };
             }
-        ],
-        parameters: {
-            sampleCount: settings.number_of_images,
-            aspectRatio: settings.aspect_ratio,
-        }
-    };
-
-    // Add negative prompt if provided
-    if (negativePrompt) {
-        requestBody.instances[0].negativePrompt = negativePrompt;
-    }
-
-    console.log(`[${extensionName}] Generating via direct API:`, endpoint);
-
-    // Use SillyTavern's proxy to handle authentication
-    const response = await fetch('/api/vertex/generate-image', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            endpoint: endpoint,
-            body: requestBody,
-            project_id: settings.project_id,
-            location: settings.location,
-        }),
-    });
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[${extensionName}] Direct API Error:`, errorText);
-        let errorMessage = `Vertex API Error: ${response.status}`;
-        try {
-            const errorJson = JSON.parse(errorText);
-            errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
-        } catch (e) {}
-        throw new Error(errorMessage);
-    }
-
-    const result = await response.json();
-    
-    // Parse Vertex AI Imagen response
-    if (result.predictions && result.predictions.length > 0) {
-        const prediction = result.predictions[0];
-        if (prediction.bytesBase64Encoded) {
-            return {
-                imageData: prediction.bytesBase64Encoded,
-                mimeType: prediction.mimeType || 'image/png',
-            };
         }
     }
 
-    throw new Error('No image was returned by Vertex AI');
-}
-
-/**
- * Core generation function
- * @param {string} prompt - The prompt
- * @param {string|null} sender - Optional sender context
- */
-async function generateImageFromPrompt(prompt, sender = null) {
-    const settings = extension_settings[extensionName];
-    const fullPrompt = await buildPrompt(prompt, sender);
-    const negativePrompt = settings.negative_prompt || '';
-
-    console.log(`[${extensionName}] Full prompt:`, fullPrompt.substring(0, 200) + '...');
-
-    // Choose generation method
-    if (settings.use_direct_api) {
-        return await generateDirectApi(fullPrompt, negativePrompt);
-    } else {
-        return await generateViaProxy(fullPrompt, negativePrompt);
-    }
+    throw new Error('No image was returned by the API');
 }
 
 function addToGallery(imageData, prompt, messageId = null) {
@@ -435,10 +288,9 @@ async function generateImage() {
     generateBtn.addClass('generating');
     generateBtn.find('i').removeClass('fa-image').addClass('fa-spinner fa-spin');
 
-    // Determine sender
     const charName = getContext().name2 || 'Character';
     const userName = name1 || 'User';
-    const sender = lastMsg.isUser ? `{{user}} (${userName})` : `{{char}} (${charName})`;
+    const sender = lastMsg.isUser ? userName : charName;
 
     try {
         const result = await generateImageFromPrompt(lastMsg.text, sender);
@@ -448,11 +300,12 @@ async function generateImage() {
             $('#vig_preview_image').attr('src', imageDataUrl);
             $('#vig_preview_container').show();
             addToGallery(result.imageData, lastMsg.text, null);
+            toastr.success('Image generated!', 'Vertex Image Generation');
         }
 
     } catch (error) {
         console.error(`[${extensionName}] Generation error:`, error);
-        toastr.error(`Failed to generate image: ${error.message}`, 'Vertex Image Generation');
+        toastr.error(`Failed: ${error.message}`, 'Vertex Image Generation');
     } finally {
         generateBtn.removeClass('generating');
         generateBtn.find('i').removeClass('fa-spinner fa-spin').addClass('fa-image');
@@ -462,71 +315,53 @@ async function generateImage() {
 async function vigMessageButton($icon) {
     const context = getContext();
     
-    if ($icon.hasClass('vig_busy')) {
-        console.log('[VIG] Already generating...');
-        return;
-    }
+    if ($icon.hasClass('vig_busy')) return;
 
     const messageElement = $icon.closest('.mes');
     const messageId = Number(messageElement.attr('mesid'));
     const message = context.chat[messageId];
 
-    if (!message) {
-        console.error('[VIG] Could not find message for generation button');
+    if (!message?.mes) {
+        toastr.warning('No message content.', 'Vertex Image Generation');
         return;
     }
 
-    const prompt = message.mes;
-    if (!prompt) {
-        toastr.warning('No message content to generate from.', 'Vertex Image Generation');
-        return;
-    }
-
-    // Determine sender from message
     const charName = getContext().name2 || 'Character';
     const userName = name1 || 'User';
-    const sender = message.is_user ? `{{user}} (${userName})` : `{{char}} (${charName})`;
+    const sender = message.is_user ? userName : charName;
 
     $icon.addClass('vig_busy');
     $icon.removeClass('fa-wand-magic-sparkles').addClass('fa-spinner fa-spin');
 
     try {
-        const result = await generateImageFromPrompt(prompt, sender);
+        const result = await generateImageFromPrompt(message.mes, sender);
 
         if (result) {
             const imageDataUrl = `data:${result.mimeType};base64,${result.imageData}`;
 
-            if (!message.extra || typeof message.extra !== 'object') {
-                message.extra = {};
-            }
+            if (!message.extra) message.extra = {};
+            if (!Array.isArray(message.extra.media)) message.extra.media = [];
+            if (!message.extra.media_display) message.extra.media_display = MEDIA_DISPLAY.GALLERY;
 
-            if (!Array.isArray(message.extra.media)) {
-                message.extra.media = [];
-            }
-
-            if (!message.extra.media_display) {
-                message.extra.media_display = MEDIA_DISPLAY.GALLERY;
-            }
-
-            const mediaAttachment = {
+            message.extra.media.push({
                 url: imageDataUrl,
                 type: MEDIA_TYPE.IMAGE,
-                title: prompt.substring(0, 100),
+                title: message.mes.substring(0, 100),
                 source: MEDIA_SOURCE.GENERATED,
-            };
+            });
 
-            message.extra.media.push(mediaAttachment);
             message.extra.media_index = message.extra.media.length - 1;
             message.extra.inline_image = true;
 
             appendMediaToMessage(message, messageElement, SCROLL_BEHAVIOR.KEEP);
             await saveChatConditional();
-            addToGallery(result.imageData, prompt, messageId);
+            addToGallery(result.imageData, message.mes, messageId);
+            toastr.success('Image generated!', 'Vertex Image Generation');
         }
 
     } catch (error) {
-        console.error(`[${extensionName}] Message generation error:`, error);
-        toastr.error(`Failed to generate: ${error.message}`, 'Vertex Image Generation');
+        console.error(`[${extensionName}] Error:`, error);
+        toastr.error(`Failed: ${error.message}`, 'Vertex Image Generation');
     } finally {
         $icon.removeClass('vig_busy fa-spinner fa-spin').addClass('fa-wand-magic-sparkles');
     }
@@ -536,12 +371,11 @@ async function slashCommandHandler(args, prompt) {
     const trimmedPrompt = String(prompt).trim();
     
     if (!trimmedPrompt) {
-        toastr.warning('Please provide a prompt for image generation.', 'Vertex Image Generation');
+        toastr.warning('Please provide a prompt.', 'Vertex Image Generation');
         return '';
     }
 
     try {
-        // No sender for slash commands - it's a direct prompt
         const result = await generateImageFromPrompt(trimmedPrompt, null);
         
         if (result) {
@@ -552,8 +386,8 @@ async function slashCommandHandler(args, prompt) {
             return imageDataUrl;
         }
     } catch (error) {
-        console.error(`[${extensionName}] Slash command generation error:`, error);
-        toastr.error(`Failed to generate: ${error.message}`, 'Vertex Image Generation');
+        console.error(`[${extensionName}] Slash command error:`, error);
+        toastr.error(`Failed: ${error.message}`, 'Vertex Image Generation');
     }
     
     return '';
@@ -564,23 +398,16 @@ function injectMessageButton(messageId) {
     if (messageElement.length === 0) return;
     
     const extraButtons = messageElement.find('.extraMesButtons');
-    if (extraButtons.length === 0) return;
-
-    if (extraButtons.find('.vig_message_gen').length > 0) return;
+    if (extraButtons.length === 0 || extraButtons.find('.vig_message_gen').length > 0) return;
 
     const vigButton = $(`
         <div title="Generate with Vertex AI 🎨" 
-             class="mes_button vig_message_gen fa-solid fa-wand-magic-sparkles" 
-             data-i18n="[title]Generate with Vertex AI 🎨">
+             class="mes_button vig_message_gen fa-solid fa-wand-magic-sparkles">
         </div>
     `);
 
     const sdButton = extraButtons.find('.sd_message_gen');
-    const cigButton = extraButtons.find('.cig_message_gen');
-    
-    if (cigButton.length) {
-        cigButton.after(vigButton);
-    } else if (sdButton.length) {
+    if (sdButton.length) {
         sdButton.after(vigButton);
     } else {
         extraButtons.prepend(vigButton);
@@ -597,10 +424,7 @@ function injectAllMessageButtons() {
 }
 
 async function clearGallery() {
-    if (!confirm('Are you sure you want to clear the gallery? This cannot be undone.')) {
-        return;
-    }
-
+    if (!confirm('Clear gallery?')) return;
     extension_settings[extensionName].gallery = [];
     saveSettingsDebounced();
     renderGallery();
@@ -608,12 +432,9 @@ async function clearGallery() {
 }
 
 function viewGalleryImage(index) {
-    const settings = extension_settings[extensionName];
-    const item = settings.gallery[index];
+    const item = extension_settings[extensionName].gallery?.[index];
     if (!item) return;
 
-    const imageUrl = `data:image/png;base64,${item.imageData}`;
-    
     const popup = $(`
         <div class="vig_popup_overlay">
             <div class="vig_popup">
@@ -621,7 +442,7 @@ function viewGalleryImage(index) {
                     <span>${new Date(item.timestamp).toLocaleString()}</span>
                     <i class="fa-solid fa-xmark vig_popup_close"></i>
                 </div>
-                <img src="${imageUrl}" />
+                <img src="data:image/png;base64,${item.imageData}" />
                 <div class="vig_popup_prompt">${item.prompt}</div>
             </div>
         </div>
@@ -637,22 +458,21 @@ function viewGalleryImage(index) {
 }
 
 function deleteGalleryImage(index) {
-    const settings = extension_settings[extensionName];
-    settings.gallery.splice(index, 1);
+    extension_settings[extensionName].gallery.splice(index, 1);
     saveSettingsDebounced();
     renderGallery();
 }
 
 jQuery(async () => {
-    console.log(`[${extensionName}] Initializing extension...`);
+    console.log(`[${extensionName}] Initializing...`);
     
     try {
         const response = await fetch(`/scripts/extensions/third-party/${extensionName}/settings.html`);
-        if (!response.ok) throw new Error(`Failed to load template: ${response.status}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const settingsHtml = await response.text();
         $('#extensions_settings').append(settingsHtml);
     } catch (error) {
-        console.error(`[${extensionName}] Error loading settings template:`, error);
+        console.error(`[${extensionName}] Error loading settings:`, error);
         toastr.error('Failed to load extension settings.', 'Vertex Image Generation');
         return;
     }
@@ -705,52 +525,32 @@ jQuery(async () => {
         saveSettingsDebounced();
     });
 
-    $('#vig_use_direct_api').on('change', function () {
-        extension_settings[extensionName].use_direct_api = $(this).prop('checked');
-        toggleDirectApiSettings();
-        saveSettingsDebounced();
-    });
-
     $('#vig_generate_btn').on('click', generateImage);
     $('#vig_clear_gallery').on('click', clearGallery);
 
     $(document).on('click', '.vig_gallery_item img', function() {
-        const index = $(this).closest('.vig_gallery_item').data('index');
-        viewGalleryImage(index);
+        viewGalleryImage($(this).closest('.vig_gallery_item').data('index'));
     });
 
     $(document).on('click', '.vig_gallery_delete', function(e) {
         e.stopPropagation();
-        const index = $(this).data('index');
-        deleteGalleryImage(index);
+        deleteGalleryImage($(this).data('index'));
     });
 
     $(document).on('click', '.vig_message_gen', function(e) {
         vigMessageButton($(e.currentTarget));
     });
 
-    eventSource.on(event_types.MESSAGE_RENDERED, (messageId) => {
-        injectMessageButton(messageId);
-    });
-
-    eventSource.on(event_types.CHAT_CHANGED, () => {
-        setTimeout(injectAllMessageButtons, 100);
-    });
-
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
-        setTimeout(injectAllMessageButtons, 100);
-    });
-
-    eventSource.on(event_types.CHAT_CREATED, () => {
-        setTimeout(injectAllMessageButtons, 100);
-    });
+    eventSource.on(event_types.MESSAGE_RENDERED, injectMessageButton);
+    eventSource.on(event_types.CHAT_CHANGED, () => setTimeout(injectAllMessageButtons, 100));
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => setTimeout(injectAllMessageButtons, 100));
+    eventSource.on(event_types.CHAT_CREATED, () => setTimeout(injectAllMessageButtons, 100));
 
     setTimeout(injectAllMessageButtons, 500);
 
-    // Register slash commands
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'verteximagine',
-        returns: 'URL of the generated image, or an empty string if generation failed',
+        returns: 'URL of the generated image',
         callback: slashCommandHandler,
         aliases: ['vimg', 'verteximg', 'imagen'],
         unnamedArgumentList: [
@@ -760,8 +560,8 @@ jQuery(async () => {
                 isRequired: true,
             }),
         ],
-        helpString: 'Generate an image using Google Vertex AI Imagen. Example: /verteximagine a beautiful sunset over mountains',
+        helpString: 'Generate an image using Vertex AI. Example: /verteximagine sunset over mountains',
     }));
 
-    console.log(`[${extensionName}] Extension loaded successfully!`);
+    console.log(`[${extensionName}] Loaded!`);
 });

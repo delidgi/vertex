@@ -1,5 +1,5 @@
 {
-    "name": "vertex-image-generation",
+    "name": "vertex",
     "display_name": "Vertex Image Generation 🎨",
     "loading_order": 100,
     "requires": [],
@@ -8,7 +8,7 @@
     "css": "style.css",
     "author": "Elouann (modified for Vertex AI)",
     "description": "Google Vertex AI Imagen-powered image generation with avatar references and character context",
-    "version": "1.0.0",
-    "homePage": "https://github.com/elouann-h/context-image-generation",
+    "version": "1.0.1",
+    "homePage": "https://github.com/delidgi/vertex",
     "manifest_version": 3
 }
